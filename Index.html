@@ -19,20 +19,20 @@
     <script src="https://unpkg.com/lucide@latest"></script>
   </head>
   <body class="bg-[#121212]">
+    
     <!-- Kontainer utama untuk aplikasi React -->
     <div id="root"></div>
 
     <!-- KODE REACT APLIKASI -->
     <script type="text/babel">
       const { useState, useEffect, useMemo } = React;
-      // Simulasi import Lucide Icons (karena di GAS tidak pakai bundler npm)
       const { Download, Upload, Target, Plus, X, ArrowRightLeft, Activity, Lock, Delete, Settings, History, ChevronRight } = lucide;
 
-      // --- KONFIGURASI HARGA (Simulasi) ---
-      const TARIF_PPH_22 = 0.0025; // 0.25% (Asumsi memiliki NPWP)
+      // --- KONFIGURASI HARGA & PAJAK ---
+      const TARIF_PPH_22 = 0.0025; // 0.25% (Asumsi NPWP terdaftar)
       const BATAS_MATERAI = 10000000;
       const BIAYA_MATERAI = 10000;
-      const PIN_TRANSAKSI = '123456'; // Default PIN simulasi
+      const PIN_TRANSAKSI = '123456'; // Default PIN transaksi simulasi
 
       // Format Rupiah
       const formatRp = (angka) => {
@@ -55,27 +55,14 @@
 
       // --- KOMPONEN UTAMA ---
       function App() {
-        // State Management
-        const [prices, setPrices] = useState(() => {
-          const saved = localStorage.getItem('emas_prices');
-          return saved ? JSON.parse(saved) : { beli: 1350000, buyback: 1250000 };
-        });
-
-        const [goals, setGoals] = useState(() => {
-          const saved = localStorage.getItem('emas_goals');
-          return saved ? JSON.parse(saved) : [
-            { id: 1, name: 'Dana Darurat', targetGrams: 50, currentGrams: 10, color: 'bg-emerald-500' },
-            { id: 2, name: 'Pendidikan Anak', targetGrams: 100, currentGrams: 25.5, color: 'bg-blue-500' },
-            { id: 3, name: 'Liburan', targetGrams: 15, currentGrams: 5, color: 'bg-amber-500' },
-          ];
-        });
-
-        const [transactions, setTransactions] = useState(() => {
-          const saved = localStorage.getItem('emas_trx');
-          return saved ? JSON.parse(saved) : [
-            { id: 1, type: 'buy', amountGrams: 40.5, pricePerGram: 1300000, date: new Date().toISOString() }
-          ];
-        });
+        // State Utama Aplikasi
+        const [prices, setPrices] = useState({ beli: 1350000, buyback: 1250000 });
+        const [goals, setGoals] = useState([]);
+        const [transactions, setTransactions] = useState([]);
+        
+        // Status Sinkronisasi/Loading Data
+        const [isLoading, setIsLoading] = useState(true);
+        const [isSyncing, setIsSyncing] = useState(false);
 
         const [activeModal, setActiveModal] = useState(null); // 'buy', 'sell', 'goal', 'settings', 'history', null
         const [formData, setFormData] = useState({ goalId: '', amountGrams: '', name: '', targetGrams: '' });
@@ -86,17 +73,26 @@
         const [pinInput, setPinInput] = useState('');
         const [pinError, setPinError] = useState(false);
 
-        // Render Lucide Icons setelah komponen di-mount
+        // Render Lucide Icons setelah komponen di-mount atau dimuat ulang
         useEffect(() => {
           lucide.createIcons();
         });
 
-        // Efek untuk menyimpan ke local storage
+        // AMBIL DATA AWAL DARI GOOGLE SHEETS
         useEffect(() => {
-          localStorage.setItem('emas_goals', JSON.stringify(goals));
-          localStorage.setItem('emas_trx', JSON.stringify(transactions));
-          localStorage.setItem('emas_prices', JSON.stringify(prices));
-        }, [goals, transactions, prices]);
+          google.script.run
+            .withSuccessHandler((data) => {
+              setPrices(data.prices);
+              setGoals(data.goals);
+              setTransactions(data.transactions);
+              setIsLoading(false);
+            })
+            .withFailureHandler((err) => {
+              alert("Gagal memuat data dari Spreadsheet: " + err);
+              setIsLoading(false);
+            })
+            .getAppData();
+        }, []);
 
         // --- KALKULASI PORTFOLIO ---
         const { totalGrams, modalInvestasi, totalNetBuyback } = useMemo(() => {
@@ -121,7 +117,7 @@
         useEffect(() => {
           if (pinInput.length === 6) {
             if (pinInput === PIN_TRANSAKSI) {
-              // Jika PIN Benar, eksekusi transaksi yang tertunda
+              // Jika PIN Benar, eksekusi transaksi
               if (pinModal.action === 'goal') {
                 executeAddGoal();
               } else if (pinModal.action === 'buy' || pinModal.action === 'sell') {
@@ -130,7 +126,6 @@
               setPinModal({ isOpen: false, action: null });
               setPinInput('');
             } else {
-              // Jika PIN Salah, tampilkan efek error (warna merah) selama 1 detik
               setPinError(true);
               setTimeout(() => {
                 setPinInput('');
@@ -140,11 +135,10 @@
           }
         }, [pinInput, pinModal.action]);
 
-        // Pra-Submit: Validasi form sebelum masuk ke input PIN
+        // Validasi form sebelum memunculkan modal PIN
         const handlePreSubmit = (e) => {
           e.preventDefault();
           
-          // Validasi data berdasarkan jenis modal
           if (activeModal === 'goal') {
             const { name, targetGrams } = formData;
             if (!name || isNaN(parseFloat(targetGrams))) return alert("Input tidak valid!");
@@ -161,13 +155,13 @@
             }
           }
           
-          // Buka Modal Numpad PIN
           setPinModal({ isOpen: true, action: activeModal });
           setPinError(false);
           setPinInput('');
         };
 
         const executeTransaction = () => {
+          setIsSyncing(true);
           const { goalId, amountGrams } = formData;
           const grams = parseFloat(amountGrams);
 
@@ -191,12 +185,23 @@
             date: new Date().toISOString()
           };
 
-          setGoals(updatedGoals);
-          setTransactions([...transactions, newTrx]);
-          closeModal();
+          // Simpan ke Google Sheets via GAS backend
+          google.script.run
+            .withSuccessHandler(() => {
+              setGoals(updatedGoals);
+              setTransactions([...transactions, newTrx]);
+              setIsSyncing(false);
+              closeModal();
+            })
+            .withFailureHandler((err) => {
+              alert("Gagal mencatat transaksi ke Spreadsheet: " + err);
+              setIsSyncing(false);
+            })
+            .saveTransactionAndGoalsGS(newTrx, updatedGoals);
         };
 
         const executeAddGoal = () => {
+          setIsSyncing(true);
           const { name, targetGrams } = formData;
           const colors = ['bg-indigo-500', 'bg-rose-500', 'bg-cyan-500', 'bg-violet-500'];
           const randomColor = colors[Math.floor(Math.random() * colors.length)];
@@ -209,8 +214,20 @@
             color: randomColor
           };
 
-          setGoals([...goals, newGoal]);
-          closeModal();
+          const updatedGoals = [...goals, newGoal];
+
+          // Simpan ke Google Sheets via GAS backend
+          google.script.run
+            .withSuccessHandler(() => {
+              setGoals(updatedGoals);
+              setIsSyncing(false);
+              closeModal();
+            })
+            .withFailureHandler((err) => {
+              alert("Gagal menyimpan tujuan baru ke Spreadsheet: " + err);
+              setIsSyncing(false);
+            })
+            .saveGoalsGS(updatedGoals);
         };
 
         const handleSaveSettings = (e) => {
@@ -222,8 +239,21 @@
             return alert("Harga tidak valid!");
           }
 
-          setPrices({ beli: newBeli, buyback: newBuyback });
-          closeModal();
+          setIsSyncing(true);
+          const newPrices = { beli: newBeli, buyback: newBuyback };
+
+          // Simpan ke Google Sheets via GAS backend
+          google.script.run
+            .withSuccessHandler(() => {
+              setPrices(newPrices);
+              setIsSyncing(false);
+              closeModal();
+            })
+            .withFailureHandler((err) => {
+              alert("Gagal memperbarui harga di Spreadsheet: " + err);
+              setIsSyncing(false);
+            })
+            .savePricesGS(newPrices);
         };
 
         const closeModal = () => {
@@ -236,14 +266,31 @@
           setActiveModal('settings');
         };
 
-        // --- KOMPONEN UI ---
+        // --- TAMPILAN LOADING AWAL ---
+        if (isLoading) {
+          return (
+            <div className="min-h-screen bg-[#121212] flex flex-col items-center justify-center p-4">
+              <div className="w-12 h-12 border-4 border-[#2ecc71] border-t-transparent rounded-full animate-spin mb-4"></div>
+              <p className="text-gray-400 text-sm">Menghubungkan ke Google Sheets...</p>
+            </div>
+          );
+        }
+
+        // --- TAMPILAN UTAMA APLIKASI ---
         return (
-          <div className="min-h-screen bg-[#121212] text-gray-100 font-sans pb-10">
+          <div className="min-h-screen bg-[#121212] text-gray-100 font-sans pb-10 relative">
             
+            {/* INDIKATOR PROSES SINKRONISASI */}
+            {isSyncing && (
+              <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-[#1a2f24] border border-[#2a4535] text-[#2ecc71] py-2 px-4 rounded-full text-xs font-semibold flex items-center gap-2 shadow-lg z-50">
+                <div className="w-3 h-3 border-2 border-[#2ecc71] border-t-transparent rounded-full animate-spin"></div>
+                Menyimpan data...
+              </div>
+            )}
+
             {/* HEADER / PORTFOLIO CARD */}
             <div className="pt-4 px-4 max-w-md mx-auto">
               <div className="bg-[#1a2f24] p-6 rounded-3xl shadow-lg border border-[#2a4535] relative">
-                {/* Tombol Pengaturan Harga */}
                 <button 
                   onClick={openSettings} 
                   className="absolute top-4 right-4 p-2 text-[#2ecc71] hover:text-white hover:bg-[#2a4535] rounded-full transition"
@@ -298,7 +345,7 @@
                 </button>
                 
                 <button 
-                   onClick={() => setActiveModal('sell')}
+                  onClick={() => setActiveModal('sell')}
                   className="flex-1 flex flex-col items-center gap-2 group"
                 >
                   <div className="p-3 bg-[#3a1e1e] text-red-500 rounded-xl group-hover:bg-[#472525] transition">
@@ -308,7 +355,7 @@
                 </button>
                 
                 <button 
-                   onClick={() => setActiveModal('goal')}
+                  onClick={() => setActiveModal('goal')}
                   className="flex-1 flex flex-col items-center gap-2 group"
                 >
                   <div className="p-3 bg-[#1e2a3a] text-blue-400 rounded-xl group-hover:bg-[#253447] transition">
@@ -323,7 +370,7 @@
             <div className="max-w-md mx-auto mt-6 px-4">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-semibold text-white">Tujuan Tabungan</h2>
-                <button onClick={() => setActiveModal('history')} className="text-xs text-[#2ecc71] flex items-center gap-1">
+                <button onClick={() => setActiveModal('history')} className="text-xs text-[#2ecc71] flex items-center gap-1 hover:underline">
                   Riwayat <i data-lucide="chevron-right" className="w-4 h-4"></i>
                 </button>
               </div>
@@ -382,7 +429,9 @@
                               <p className={`text-sm font-bold ${trx.type === 'buy' ? 'text-[#2ecc71]' : 'text-red-500'}`}>
                                 {trx.type === 'buy' ? 'Beli Emas' : 'Jual Emas'}
                               </p>
-                              <p className="text-xs text-gray-400 mt-1">{new Date(trx.date).toLocaleString('id-ID', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' })}</p>
+                              <p className="text-xs text-gray-400 mt-1">
+                                {new Date(trx.date).toLocaleString('id-ID', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' })}
+                              </p>
                             </div>
                             <div className="text-right">
                               <p className="text-sm font-bold text-white">{trx.amountGrams.toFixed(2)} g</p>
@@ -395,7 +444,7 @@
                   ) : (
                     <form onSubmit={activeModal === 'settings' ? handleSaveSettings : handlePreSubmit} className="space-y-4">
                     
-                    {/* Form Input for Buy/Sell */}
+                    {/* Input Beli / Jual */}
                     {(activeModal === 'buy' || activeModal === 'sell') && (
                       <>
                         <div>
@@ -423,7 +472,7 @@
                           />
                         </div>
                         
-                        {/* Estimasi Biaya/Hasil Modal */}
+                        {/* Rincian Estimasi Biaya */}
                         {formData.amountGrams && (
                           <div className="bg-[#121212] p-4 rounded-xl border border-gray-800 space-y-2 mt-4 text-sm">
                             {activeModal === 'buy' ? (
@@ -459,7 +508,7 @@
                       </>
                     )}
 
-                    {/* Form Input for New Goal */}
+                    {/* Input Tujuan Baru */}
                     {activeModal === 'goal' && (
                       <>
                         <div>
@@ -469,7 +518,7 @@
                             required
                             value={formData.name}
                             onChange={(e) => setFormData({...formData, name: e.target.value})}
-                            placeholder="Contoh: Umroh, Mobil Baru"
+                            placeholder="Contoh: Tabungan Umroh, DP Mobil"
                             className="w-full bg-[#121212] border border-gray-700 rounded-xl p-3 text-white focus:outline-none focus:border-[#2ecc71]"
                           />
                         </div>
@@ -488,7 +537,7 @@
                       </>
                     )}
 
-                    {/* Form Input for Settings (Harga Manual) */}
+                    {/* Update Harga */}
                     {activeModal === 'settings' && (
                       <>
                         <div>
@@ -516,7 +565,8 @@
 
                     <button 
                       type="submit" 
-                      className="w-full bg-[#2ecc71] hover:bg-[#27ae60] text-[#121212] font-bold py-3 rounded-xl mt-6 transition"
+                      disabled={isSyncing}
+                      className="w-full bg-[#2ecc71] hover:bg-[#27ae60] disabled:bg-gray-700 disabled:text-gray-400 text-[#121212] font-bold py-3 rounded-xl mt-6 transition"
                     >
                       {activeModal === 'buy' ? 'Beli Sekarang' : activeModal === 'sell' ? 'Jual Sekarang' : activeModal === 'settings' ? 'Simpan Harga' : 'Simpan Tujuan'}
                     </button>
