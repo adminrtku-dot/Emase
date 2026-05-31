@@ -33,7 +33,6 @@ function getSpreadsheet() {
 
 /**
  * Fungsi utama yang dijalankan Google Apps Script saat Web App diakses.
- * Merender file 'Index.html' dengan mode responsif.
  */
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('Index')
@@ -73,6 +72,14 @@ function initSheets() {
   if (!sheetTrx) {
     sheetTrx = ss.insertSheet('Transactions');
     sheetTrx.appendRow(['ID Transaksi', 'Tanggal', 'Tipe', 'Gram', 'Harga Per Gram']);
+  }
+
+  // Sheet 4: Konfigurasi Sistem (PIN Keamanan)
+  let sheetConfig = ss.getSheetByName('Config');
+  if (!sheetConfig) {
+    sheetConfig = ss.insertSheet('Config');
+    sheetConfig.appendRow(['Key', 'Value']);
+    sheetConfig.appendRow(['PIN_TRANSAKSI', '123456']); // Default PIN
   }
 }
 
@@ -120,8 +127,12 @@ function getAppData() {
       pricePerGram: Number(row[4])
     }));
   }
+
+  // 4. Ambil PIN Transaksi
+  const sheetConfig = ss.getSheetByName('Config');
+  const pin = String(sheetConfig.getRange(2, 2).getValue());
   
-  return { prices, goals, transactions };
+  return { prices, goals, transactions, pin };
 }
 
 /**
@@ -135,20 +146,27 @@ function savePricesGS(prices) {
 }
 
 /**
+ * Menyimpan PIN baru ke sheet 'Config'.
+ */
+function savePinGS(newPin) {
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName('Config');
+  sheet.getRange(2, 2).setValue(String(newPin));
+  return { success: true };
+}
+
+/**
  * Menyimpan seluruh data tujuan (Goals) ke sheet 'Goals'.
- * Metode ini membersihkan baris lama dan menulis ulang daftar terbaru.
  */
 function saveGoalsGS(goals) {
   const ss = getSpreadsheet();
   const sheet = ss.getSheetByName('Goals');
   
-  // Hapus semua data lama di bawah header jika ada
   const lastRow = sheet.getLastRow();
   if (lastRow > 1) {
     sheet.deleteRows(2, lastRow - 1);
   }
   
-  // Tulis ulang baris baru
   goals.forEach(goal => {
     sheet.appendRow([goal.id, goal.name, goal.targetGrams, goal.currentGrams, goal.color]);
   });
@@ -162,11 +180,9 @@ function saveGoalsGS(goals) {
 function saveTransactionAndGoalsGS(trx, updatedGoals) {
   const ss = getSpreadsheet();
   
-  // 1. Catat Transaksi Baru
   const sheetTrx = ss.getSheetByName('Transactions');
   sheetTrx.appendRow([trx.id, trx.date, trx.type, trx.amountGrams, trx.pricePerGram]);
   
-  // 2. Perbarui Semua Tujuan (karena saldo berubah)
   saveGoalsGS(updatedGoals);
   
   return { success: true };
