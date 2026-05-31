@@ -1,4 +1,37 @@
 /**
+ * Fungsi pembantu untuk mendapatkan Spreadsheet.
+ * Jika script terikat (container-bound), ia menggunakan spreadsheet aktif.
+ * Jika standalone, ia akan mencari spreadsheet yang pernah dibuat atau membuat baru.
+ */
+function getSpreadsheet() {
+  try {
+    const activeSS = SpreadsheetApp.getActiveSpreadsheet();
+    if (activeSS) {
+      return activeSS;
+    }
+  } catch (e) {
+    // Abaikan error dan lanjut ke metode alternatif
+  }
+
+  // Jika gagal mendapatkan spreadsheet aktif, gunakan properti penyimpanan script
+  const userProperties = PropertiesService.getUserProperties();
+  const savedSheetId = userProperties.getProperty('GOLD_SAVINGS_SHEET_ID');
+
+  if (savedSheetId) {
+    try {
+      return SpreadsheetApp.openById(savedSheetId);
+    } catch (e) {
+      // Jika spreadsheet lama terhapus, buat baru di bawah
+    }
+  }
+
+  // Membuat Spreadsheet baru jika tidak ada yang ditemukan
+  const newSS = SpreadsheetApp.create('Database Tabungan Emas');
+  userProperties.setProperty('GOLD_SAVINGS_SHEET_ID', newSS.getId());
+  return newSS;
+}
+
+/**
  * Fungsi utama yang dijalankan Google Apps Script saat Web App diakses.
  * Merender file 'Index.html' dengan mode responsif.
  */
@@ -10,11 +43,11 @@ function doGet() {
 }
 
 /**
- * Membuka Spreadsheet aktif dan memeriksa/membuat lembar kerja (sheet) 
+ * Membuka Spreadsheet dan memeriksa/membuat lembar kerja (sheet) 
  * yang diperlukan jika belum ada.
  */
 function initSheets() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   
   // Sheet 1: Konfigurasi Harga
   let sheetPrices = ss.getSheetByName('Prices');
@@ -45,11 +78,10 @@ function initSheets() {
 
 /**
  * Mengambil semua data dari Google Sheets untuk dikirim ke aplikasi React (Index.html).
- * Dipanggil saat aplikasi pertama kali dimuat.
  */
 function getAppData() {
   initSheets();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   
   // 1. Ambil Data Harga
   const sheetPrices = ss.getSheetByName('Prices');
@@ -61,20 +93,25 @@ function getAppData() {
   
   // 2. Ambil Data Tujuan (Goals)
   const sheetGoals = ss.getSheetByName('Goals');
-  const goalsRows = sheetGoals.getRange(2, 1, sheetGoals.getLastRow() - 1, 5).getValues();
-  const goals = goalsRows.map(row => ({
-    id: Number(row[0]),
-    name: String(row[1]),
-    targetGrams: Number(row[2]),
-    currentGrams: Number(row[3]),
-    color: String(row[4])
-  }));
+  const lastRowGoals = sheetGoals.getLastRow();
+  let goals = [];
+  if (lastRowGoals > 1) {
+    const goalsRows = sheetGoals.getRange(2, 1, lastRowGoals - 1, 5).getValues();
+    goals = goalsRows.map(row => ({
+      id: Number(row[0]),
+      name: String(row[1]),
+      targetGrams: Number(row[2]),
+      currentGrams: Number(row[3]),
+      color: String(row[4])
+    }));
+  }
   
   // 3. Ambil Data Transaksi (Maksimal 10 terakhir)
   const sheetTrx = ss.getSheetByName('Transactions');
+  const lastRowTrx = sheetTrx.getLastRow();
   let transactions = [];
-  if (sheetTrx.getLastRow() > 1) {
-    const trxRows = sheetTrx.getRange(2, 1, sheetTrx.getLastRow() - 1, 5).getValues();
+  if (lastRowTrx > 1) {
+    const trxRows = sheetTrx.getRange(2, 1, lastRowTrx - 1, 5).getValues();
     transactions = trxRows.map(row => ({
       id: Number(row[0]),
       date: String(row[1]),
@@ -91,7 +128,7 @@ function getAppData() {
  * Menyimpan pembaruan harga emas ke sheet 'Prices'.
  */
 function savePricesGS(prices) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const sheet = ss.getSheetByName('Prices');
   sheet.getRange(2, 1, 1, 2).setValues([[prices.beli, prices.buyback]]);
   return { success: true };
@@ -102,12 +139,13 @@ function savePricesGS(prices) {
  * Metode ini membersihkan baris lama dan menulis ulang daftar terbaru.
  */
 function saveGoalsGS(goals) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const sheet = ss.getSheetByName('Goals');
   
-  // Hapus semua data lama di bawah header
-  if (sheet.getLastRow() > 1) {
-    sheet.deleteRows(2, sheet.getLastRow() - 1);
+  // Hapus semua data lama di bawah header jika ada
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    sheet.deleteRows(2, lastRow - 1);
   }
   
   // Tulis ulang baris baru
@@ -122,7 +160,7 @@ function saveGoalsGS(goals) {
  * Mencatat transaksi baru ke sheet 'Transactions' sekaligus memperbarui saldo di sheet 'Goals'.
  */
 function saveTransactionAndGoalsGS(trx, updatedGoals) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   
   // 1. Catat Transaksi Baru
   const sheetTrx = ss.getSheetByName('Transactions');
